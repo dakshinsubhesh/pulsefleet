@@ -36,3 +36,26 @@ pulsefleet/
 ├── .gitignore
 └── README.md
 ```
+
+## Day 2: API Design & Contracts
+
+Defined the core PulseFleet entities and their relationships:
+
+- Driver
+- Vehicle
+- Shipment
+- Route
+- Alert
+
+Created Pydantic request and response schemas in `app/schemas.py`.
+
+Documented the REST API endpoint plan, request/response contracts,
+success cases, validation errors, not-found errors, and conflict cases
+in `docs/api-design.md`.
+
+### Predictive Evaluation Endpoint
+
+`POST /shipments/{id}/evaluate`
+
+This endpoint is planned as the trigger for PulseFleet's predictive
+exception and delay evaluation system.
