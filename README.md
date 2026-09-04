@@ -59,3 +59,95 @@ in `docs/api-design.md`.
 
 This endpoint is planned as the trigger for PulseFleet's predictive
 exception and delay evaluation system.
+
+Day 3: Database & Persistence
+
+Configured PostgreSQL 17 as the database for PulseFleet.
+
+Database Stack
+PostgreSQL 17
+SQLAlchemy
+asyncpg
+Alembic
+Async database sessions
+Database Configuration
+
+The async database connection is configured in:
+
+app/database.py
+
+The application uses SQLAlchemy's asynchronous engine and request-scoped database sessions.
+
+ORM Models
+
+Created SQLAlchemy ORM models for the five core entities:
+
+Driver
+Vehicle
+Shipment
+Route
+Alert
+
+Models and their relationships are defined in:
+
+app/models.py
+
+Foreign keys and entity relationships match the API design defined during Day 2.
+
+Database Migrations
+
+Alembic was configured for database schema migrations.
+
+Migration configuration:
+
+alembic.ini
+migrations/env.py
+
+The initial migration creates the core PulseFleet tables.
+
+Migration Verification
+
+Successfully applied the migration using:
+
+alembic upgrade head
+
+Current migration:
+
+b6187da16e99 (head)
+
+The database connection was also verified successfully using the async SQLAlchemy engine.
+
+Day 3 Status
+PostgreSQL database configured
+Async SQLAlchemy connection configured
+ORM models created
+Relationships and foreign keys configured
+Alembic migration configured
+Initial migration successfully applied
+Database connection verified
+Project Structure
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py
+│   ├── models.py
+│   └── schemas.py
+│
+├── docs/
+│   └── api-design.md
+│
+├── migrations/
+│   ├── env.py
+│   ├── script.py.mako
+│   └── versions/
+│       └── <migration-file>
+│
+├── .env.example
+├── .gitignore
+├── alembic.ini
+├── README.md
+└── requirements.txt
+
+
+
