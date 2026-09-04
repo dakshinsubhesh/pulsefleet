@@ -37,28 +37,72 @@ pulsefleet/
 └── README.md
 ```
 
-## Day 2: API Design & Contracts
+# Day 2: API Design
 
-Defined the core PulseFleet entities and their relationships:
+Defined the project entities, request/response contracts, and REST endpoint plan for PulseFleet before implementation.
 
-- Driver
-- Vehicle
-- Shipment
-- Route
-- Alert
+## Entities & Relationships
 
-Created Pydantic request and response schemas in `app/schemas.py`.
+Five core entities were identified and their relationships mapped:
 
-Documented the REST API endpoint plan, request/response contracts,
-success cases, validation errors, not-found errors, and conflict cases
-in `docs/api-design.md`.
+- **Driver** — assignable to shipments (1 Driver → * Shipments)
+- **Vehicle** — a fleet asset (1 Vehicle → * Shipments over time)
+- **Shipment** — the core entity; one delivery job, optionally linked to a Driver and Vehicle
+- **Route** — 1:1 with Shipment; holds distance/duration/risk flags used by the prediction logic
+- **Alert** — 0..* per Shipment; system-generated when risk rules fire, resolvable by a user
 
-### Predictive Evaluation Endpoint
+Full entity-relationship breakdown and diagram documented in:
+`docs/api-design.md`
 
-`POST /shipments/{id}/evaluate`
+## Request/Response Contracts
 
-This endpoint is planned as the trigger for PulseFleet's predictive
-exception and delay evaluation system.
+Pydantic models defined in:
+`app/schemas.py`
+
+Each entity follows a Create / Update / Response schema split:
+
+| Entity   | Create schema     | Update schema     | Response schema    |
+|----------|--------------------|--------------------|----------------------|
+| Driver   | `DriverCreate`      | `DriverUpdate`      | `DriverResponse`      |
+| Vehicle  | `VehicleCreate`     | `VehicleUpdate`     | `VehicleResponse`     |
+| Shipment | `ShipmentCreate` (nests `RouteCreate`) | `ShipmentUpdate` | `ShipmentResponse` (nests `RouteResponse`) |
+| Alert    | — (system-generated) | `AlertResolveRequest` | `AlertResponse`     |
+
+A shared `ErrorResponse` schema (`detail`, `error_code`) is returned on every 4xx/5xx.
+
+Verified: all schemas import cleanly and enforce field constraints (e.g. `priority` bounded 1–3, `capacity_kg` must be > 0).
+
+## REST Endpoint Plan
+
+Full endpoint plan — including success and error cases for every route — documented in:
+`docs/api-design.md`
+
+Covers:
+- CRUD for `/drivers`, `/vehicles`, `/shipments`
+- List filtering (`status`, `driver_id`, `priority`, `severity`, `resolved`, etc.)
+- `GET /alerts` and `GET /alerts/{id}`
+- `POST /shipments/{id}/evaluate` — the prediction trigger that runs the rules engine against a shipment + route and generates `Alert` records
+- `PATCH /alerts/{id}/resolve`
+- Standard error responses (404, 409, 422, 500) applied consistently across all endpoints
+
+## Day 2 Status
+- [x] Entities and relationships documented
+- [x] Pydantic request and response models exist
+- [x] Endpoint plan covers success and error cases
+
+## Project Structure
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   └── schemas.py
+├── docs/
+│   └── api-design.md
+├── .gitignore
+├── README.md
+└── requirements.txt
+```
 
 # Day 3: Database & Persistence
 
