@@ -189,3 +189,67 @@ pulsefleet/
 ├── README.md
 └── requirements.txt
 ```
+
+## Day 4: Create Workflow
+
+Implemented `POST /shipments` — the primary create endpoint — plus `POST /drivers` and `POST /vehicles` (needed as FK dependencies for shipments).
+
+### Validation (before any write)
+- `tracking_number` (shipments), `license_number` (drivers), `plate_number` (vehicles) must be unique → **409** if already taken
+- `driver_id` / `vehicle_id` on a shipment must reference existing rows → **404** if not
+- Field-level constraints (`weight_kg > 0`, `priority` 1–3, required fields, etc.) enforced by the Day 2 Pydantic schemas → **422**, with a flattened, readable `detail` message instead of FastAPI's raw error array
+
+### Transactional Write
+`POST /shipments` creates the `Shipment` and its `Route` on the same session in a single transaction — proven by test: a request with a non-existent `driver_id` is rejected before any write happens, and a request that fails at the DB layer rolls back cleanly. No orphaned rows are ever left behind.
+
+### Clean Responses
+All create endpoints return their `*Response` Pydantic schema (never the raw ORM object), so only the fields defined in Day 2's contracts are ever exposed — no internal-only columns, no SQLAlchemy internals.
+
+Error handling lives in `app/exceptions.py` (`NotFoundError`, `ConflictError`) and is mapped to JSON in `app/main.py`'s exception handlers, so every 4xx conforms to the shared `ErrorResponse { detail, error_code }` shape.
+
+### Verification
+
+Tested with a live server against Postgres:
+
+| Case | Result |
+|------|--------|
+| Valid shipment + route | 201, full nested response |
+| Duplicate `tracking_number` | 409 `duplicate_tracking_number` |
+| Nonexistent `driver_id` | 404 `driver_not_found`, no row written |
+| `weight_kg` ≤ 0 | 422, clean message |
+| `priority` out of range | 422, clean message |
+| Missing `route` | 422, clean message |
+
+Also confirmed directly in the database that failed requests leave **zero orphaned rows** — only the one successful shipment exists after the full test run.
+
+## Day 4 Status
+- [x] Valid data is persisted
+- [x] Invalid input returns useful 4xx errors
+- [x] Response does not expose internal fields
+
+## Project Structure (updated)
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── exceptions.py
+│   └── routers/
+│       ├── __init__.py
+│       ├── drivers.py
+│       ├── vehicles.py
+│       └── shipments.py
+├── docs/
+│   └── api-design.md
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── .env.example
+├── .gitignore
+├── alembic.ini
+├── README.md
+└── requirements.txt
+```
