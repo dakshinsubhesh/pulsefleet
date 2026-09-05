@@ -253,3 +253,64 @@ pulsefleet/
 ├── README.md
 └── requirements.txt
 ```
+
+## Day 5: Read Workflows
+
+Implemented `GET /shipments` (list) and `GET /shipments/{id}` (detail) — plus matching list/detail endpoints for `/drivers` and `/vehicles`.
+
+### Pagination
+`limit`/`offset` query params (`app/pagination.py`), `limit` bounded 1–100 (default 20), `offset` ≥ 0 — both validated with 422 on bad input. Every list response is wrapped in a `Page` envelope: `{ items, total, limit, offset }`, so the client always knows how many records exist in total, not just how many came back.
+
+### Stable Ordering
+All list endpoints order by `id ASC` — the primary key, which never changes — rather than `created_at`, since two rows can share a timestamp. Verified: requesting `limit=2` at `offset=0`, `offset=2`, and `offset=4` against 6 seeded shipments returns three non-overlapping pages covering all 6 ids in order, with no duplicates or gaps.
+
+### Filtering (Shipments List)
+`status`, `driver_id`, `vehicle_id`, `priority` — combinable, all applied before both the count and the page query so `total` always matches the filtered result set, not the whole table.
+
+### Detail Endpoints Scoped Correctly
+Each detail endpoint (`/shipments/{id}`, `/drivers/{id}`, `/vehicles/{id}`) fetches by primary key only and returns exactly one resource or a 404 — verified for both existing and non-existent ids on all three.
+
+### Verification
+
+| Case | Result |
+|------|--------|
+| List, `limit=2` across `offset=0/2/4` | 3 non-overlapping pages, all 6 seeded ids covered, no duplicates |
+| Filter `priority=1` | Only matching ids returned, `total` reflects filtered count |
+| Filter `driver_id=1` | Only shipments with that driver returned |
+| `GET /shipments/1` (exists) | 200, full nested response |
+| `GET /shipments/9999` (missing) | 404 `shipment_not_found` |
+| `GET /drivers/9999`, `GET /vehicles/9999` (missing) | 404 with matching `error_code` |
+| `limit=0` / `limit=500` | 422, clean validation message |
+
+## Day 5 Status
+- [x] List endpoint is paginated
+- [x] Detail endpoint is scoped correctly
+- [x] Missing records return 404
+
+## Project Structure (updated)
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py       # async engine + session
+│   ├── models.py         # SQLAlchemy ORM models
+│   ├── schemas.py         # Pydantic request/response models + Page[T]
+│   ├── exceptions.py      # NotFoundError, ConflictError
+│   ├── pagination.py      # shared limit/offset query params
+│   └── routers/
+│       ├── __init__.py
+│       ├── drivers.py     # POST, GET list, GET detail
+│       ├── vehicles.py    # POST, GET list, GET detail
+│       └── shipments.py   # POST, GET list (filtered), GET detail
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── docs/
+│   └── api-design.md
+├── requirements.txt
+├── alembic.ini
+├── .env.example
+├── .gitignore
+└── README.md
+```
