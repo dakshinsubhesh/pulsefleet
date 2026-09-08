@@ -314,3 +314,71 @@ pulsefleet/
 ├── .gitignore
 └── README.md
 ```
+
+## Day 6: Update and Delete
+
+Implemented `PATCH`/`DELETE` for shipments (primary), drivers, and vehicles.
+
+### Partial Updates Validate Fields
+All `PATCH` endpoints use `exclude_unset=True` — only fields present in the request body are changed. Validation before any write:
+- **Shipments**: `driver_id`/`vehicle_id`, if changed, must reference existing rows (404). Status changes must follow the lifecycle in `app/shipment_state.py`: `pending → in_transit → delivered`, or `→ cancelled` from `pending`/`in_transit`. `delivered`/`cancelled` are terminal — **any** further edit (not just status) is rejected with 409, since a closed shipment represents something that already happened.
+- **Drivers/Vehicles**: `license_number`/`plate_number`, if changed, must stay unique (409 on collision).
+- Field-level constraints (e.g. `priority` 1–3) are enforced by the existing `*Update` schemas → 422.
+
+### Delete Behavior Is Explicit
+- **Shipment**: only a `pending` shipment can be deleted. Anything `in_transit` or beyond is real activity that must be `cancelled` via `PATCH`, not erased — 409 otherwise. A pending delete cascades to its `Route` (and any `Alert`s) via the ORM's `cascade="all, delete-orphan"` — verified no orphaned `Route` row survives.
+- **Driver/Vehicle**: cannot be deleted while it has any `pending`/`in_transit` shipment attached — 409 with the active count. Deletable once those shipments are resolved (delivered/cancelled) or reassigned — verified end-to-end: blocked while active, then succeeded immediately after cancelling the shipment.
+
+### Database Constraints Remain Valid
+No update or delete path can produce a shipment pointing at a nonexistent driver/vehicle, a duplicate license/plate number, or an orphaned route. Tested with a live server against Postgres.
+
+### Verification
+
+| Case | Result |
+|------|--------|
+| PATCH shipment, partial field only | 200, other fields unchanged |
+| PATCH shipment, valid transition (`pending→in_transit→delivered`) | 200 at each step |
+| PATCH shipment, invalid transition (`in_transit→pending`) | 409 `invalid_status_transition` |
+| PATCH shipment already `delivered` | 409 `shipment_terminal_state` |
+| PATCH shipment, `priority=9` | 422 |
+| PATCH shipment, nonexistent `driver_id` | 404 |
+| PATCH/DELETE nonexistent id (shipment/driver/vehicle) | 404 |
+| DELETE shipment, `status=pending` | 204, route cascade-deleted |
+| DELETE shipment, `status=delivered` | 409 `shipment_not_deletable` |
+| DELETE driver/vehicle with active shipment | 409 `*_has_active_shipments` |
+| DELETE driver/vehicle after shipment resolved | 204 |
+| PATCH driver/vehicle, duplicate license/plate | 409 |
+
+## Day 6 Status
+- [x] Partial updates validate fields
+- [x] Delete behavior is explicit
+- [x] Database constraints remain valid
+
+## Project Structure (updated)
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py          # async engine + session
+│   ├── models.py             # SQLAlchemy ORM models
+│   ├── schemas.py            # Pydantic request/response models + Page[T]
+│   ├── exceptions.py         # NotFoundError, ConflictError
+│   ├── pagination.py         # shared limit/offset query params
+│   ├── shipment_state.py     # status transition state machine
+│   └── routers/
+│       ├── __init__.py
+│       ├── drivers.py        # POST, GET list/detail, PATCH, DELETE
+│       ├── vehicles.py       # POST, GET list/detail, PATCH, DELETE
+│       └── shipments.py      # POST, GET list/detail, PATCH, DELETE
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── docs/
+│   └── api-design.md
+├── requirements.txt
+├── alembic.ini
+├── .env.example
+├── .gitignore
+└── README.md
+```
