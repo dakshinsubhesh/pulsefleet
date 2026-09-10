@@ -382,3 +382,72 @@ pulsefleet/
 ├── .gitignore
 └── README.md
 ```
+
+## Day 7: Authentication
+
+Added JWT-based authentication (`/auth/register`, `/auth/login`, `/auth/me`) and protected every mutating endpoint (`POST`/`PATCH`/`DELETE`) on shipments, drivers, and vehicles. Read endpoints (`GET`) remain public, since browsing fleet data isn't sensitive in this design — only writing to it is.
+
+### Credentials / Tokens Are Validated
+- Passwords hashed with **bcrypt** (`app/security.py`) — never stored or logged in plaintext.
+- `POST /auth/login` uses the standard OAuth2 password flow, verifies the password against the stored hash, and issues a **JWT** (HS256, 60-minute expiry by default) via **PyJWT**.
+- `GET /auth/me` and every protected route decode and validate that JWT through `get_current_user` (`app/dependencies.py`): checks signature, expiry, and that the user still exists and is active — before the route body ever runs.
+- Login failure (wrong password) and login failure (unknown username) return the **identical** 401 message, deliberately, to avoid leaking which usernames are registered.
+
+### Protected Routes Reject Anonymous Requests
+Every `POST`/`PATCH`/`DELETE` on `/shipments`, `/drivers`, `/vehicles` requires a valid Bearer token — verified live: no token, a garbage token, and an expired/invalid-signature token are all rejected with 401 before hitting the database, while a valid token succeeds normally. `GET` endpoints were re-verified to still work anonymously (they're intentionally public).
+
+### Secrets Are Loaded From Environment Variables
+`SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` are read from `.env` via `python-dotenv` in `app/security.py` — **not hardcoded**. Verified: temporarily removing `SECRET_KEY` from the environment makes the app **fail to start** with a clear error, rather than silently falling back to an insecure default.
+
+### Verification
+
+| Case | Result |
+|------|--------|
+| `POST /auth/register` | 201, password never returned in response |
+| `POST /auth/register` duplicate username | 409 |
+| `POST /auth/login` correct credentials | 200, JWT issued |
+| `POST /auth/login` wrong password / unknown username | 401, identical message both times |
+| `GET /auth/me` with valid token | 200, own profile |
+| `GET /auth/me` with no token / garbage token | 401 `not_authenticated` / `invalid_token` |
+| `POST /shipments` with no token | 401, blocked before DB write |
+| `POST /shipments` with valid token | 201, succeeds |
+| `PATCH`/`DELETE` with no token | 401 |
+| `GET /shipments` with no token | 200 — reads stay public |
+| App started with `SECRET_KEY` unset | Fails to start with a clear error |
+
+## Day 7 Status
+- [x] Credentials or tokens are validated
+- [x] Protected routes reject anonymous requests
+- [x] Secrets are loaded from environment variables
+
+## Project Structure (updated)
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py           # async engine + session
+│   ├── models.py              # SQLAlchemy ORM models (incl. User)
+│   ├── schemas.py             # Pydantic models + Page[T] + auth schemas
+│   ├── exceptions.py          # NotFoundError, ConflictError, UnauthorizedError
+│   ├── pagination.py          # shared limit/offset query params
+│   ├── shipment_state.py      # status transition state machine
+│   ├── security.py            # password hashing + JWT (Day 7)
+│   ├── dependencies.py        # get_current_user auth dependency (Day 7)
+│   └── routers/
+│       ├── __init__.py
+│       ├── auth.py            # register, login, me (Day 7)
+│       ├── drivers.py         # POST/PATCH/DELETE protected, GET public
+│       ├── vehicles.py        # POST/PATCH/DELETE protected, GET public
+│       └── shipments.py       # POST/PATCH/DELETE protected, GET public
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── docs/
+│   └── api-design.md
+├── requirements.txt
+├── alembic.ini
+├── .env.example
+├── .gitignore
+└── README.md
+```
