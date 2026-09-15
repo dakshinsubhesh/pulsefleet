@@ -451,3 +451,307 @@ pulsefleet/
 ├── .gitignore
 └── README.md
 ```
+
+## Day 8: Authorization
+
+Enforced resource ownership across all three core entities so one user can never read or modify another user's records — including reads, which now also require authentication (a necessary consequence of owner-scoping).
+
+### Every private query is owner-scoped
+Added `owner_id` (FK → `users.id`) to `Driver`, `Vehicle`, and `Shipment`. Every query in `app/routers/{drivers,vehicles,shipments}.py` — create, list, detail, update, delete — filters by `owner_id == current_user.id`. A shipment's `driver_id`/`vehicle_id` references are also ownership-checked on create/update: you cannot attach another user's driver or vehicle to your own shipment, even if you know/guess its numeric id.
+
+### Cross-user access returns a controlled error
+Reading, updating, or deleting a record that belongs to another user returns the **same 404** used for a record that doesn't exist at all (`shipment_not_found`, `driver_not_found`, `vehicle_not_found`). This is deliberate: a 403 would confirm the id is real and just off-limits, letting someone enumerate valid ids belonging to other tenants. 404 reveals nothing.
+
+### Migration handles pre-existing data safely
+The migration (`4f3ac6a69f21`) adds `owner_id` as nullable first, **backfills** any pre-existing rows to the earliest-registered user, then tightens the column to `NOT NULL` with named FK constraints (needed for a clean, reversible `downgrade()`). Verified against real leftover data from earlier days (0 drivers, 3 vehicles, 7 shipments with no owner) — backfill assigned them correctly, and a full downgrade → upgrade cycle re-runs the backfill logic cleanly.
+
+### Ownership tests are included
+`tests/test_ownership.py` — 9 tests, run with `pytest` against the real ASGI app and a live Postgres database (no mocking). Each test spins up two independent users via `/auth/register` + `/auth/login` and asserts one can never read/list/update/delete the other's data.
+
+| Test | Verifies |
+|------|----------|
+| `test_owner_can_read_own_shipment` | Baseline: owner can read their own data |
+| `test_other_user_cannot_read_shipment` | Cross-user GET → 404 |
+| `test_other_user_cannot_update_shipment` | Cross-user PATCH → 404, data genuinely untouched |
+| `test_other_user_cannot_delete_shipment` | Cross-user DELETE → 404, record still exists for owner |
+| `test_list_shipments_is_owner_scoped` | List never includes another user's shipments, either direction |
+| `test_cannot_assign_another_users_driver_to_own_shipment` | Can't attach someone else's driver via a guessed id |
+| `test_other_user_cannot_read_or_modify_driver` | Same GET/PATCH/DELETE protection for drivers |
+| `test_other_user_cannot_read_or_modify_vehicle` | Same GET/PATCH/DELETE protection for vehicles |
+| `test_list_drivers_and_vehicles_is_owner_scoped` | Driver/vehicle lists are also owner-scoped |
+
+## Day 8 Status
+- [x] Every private query is owner-scoped
+- [x] Cross-user access returns a controlled error
+- [x] Ownership tests are included
+
+## Day 9: Search and Filters
+
+Extended list endpoints on shipments, drivers, and vehicles with search and range filters — every one executed as a SQL `WHERE` clause, never loaded into Python and filtered in memory.
+
+### Filters execute in SQL
+- **Shipments**: `q` (ILIKE on tracking_number), `origin`/`destination` (ILIKE on the joined `Route`), `pickup_after`/`pickup_before`, `delivery_after`/`delivery_before` (range on scheduled timestamps), `weight_min`/`weight_max` (range), plus the existing `status`/`driver_id`/`vehicle_id`/`priority` exact-match filters.
+- **Drivers**: `q` (ILIKE across name/license_number/phone), `status`.
+- **Vehicles**: `q` (ILIKE across plate_number/vehicle_type), `status`, `vehicle_type`, `capacity_min`/`capacity_max`.
+
+All filters (including the owner scope from Day 8) are combined with SQLAlchemy `.where()` calls before the query is ever sent to Postgres — count and page queries only ever touch the rows that actually match, never the full table.
+
+### Empty results are handled
+A filter combination matching nothing returns `200` with `{"items": [], "total": 0, ...}` — never a 404 or error. Verified for shipments, drivers, and vehicles.
+
+### Pagination remains correct with filters
+`total` reflects the **filtered** count, not the whole table (proven with a mixed dataset: 5 matching + 1 non-matching shipment → `total: 5`). Paging through filtered results with `limit=2` across 3 offsets returns all 5 filtered ids with zero duplicates and zero gaps.
+
+### Bug found and fixed
+While wiring this up, found that `drivers.py` was missing its `Optional`/`Query` imports — the search filter code referenced them but nothing imported them, which would have crashed the whole app at startup. Fixed and re-verified the app imports and runs cleanly.
+
+### Tests
+`tests/test_search_filters.py` — 7 tests, run against the live app + Postgres:
+
+| Test | Verifies |
+|------|----------|
+| `test_search_by_tracking_number_substring` | `q` narrows to the matching shipment only |
+| `test_filter_by_origin` | Route-joined `origin` filter works |
+| `test_weight_range_filter` | Combined range + search filters (AND) |
+| `test_invalid_range_returns_422` | `weight_min > weight_max` rejected cleanly |
+| `test_empty_result_is_handled_not_errored` | No match → 200, empty page, not an error |
+| `test_empty_result_also_handled_for_drivers_and_vehicles` | Same guarantee on the other two resources |
+| `test_pagination_remains_correct_with_filters_applied` | `total` is the filtered count; 3 pages cover all 5 matches with no overlap |
+
+Run with `pytest tests/ -v` — 16/16 pass (9 from Day 8 + 7 new).
+
+### Day 9 Status
+- [x] Filters execute in SQL
+- [x] Empty results are handled
+- [x] Pagination remains correct with filters
+
+DAY 9 STRUCTURE
+pulsefleet/
+│
+├── app/
+│   ├── main.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── dependencies.py
+│   ├── security.py
+│   ├── exceptions.py
+│   ├── pagination.py
+│   ├── shipment_state.py
+│   │
+│   └── routers/
+│       ├── __init__.py
+│       ├── auth.py
+│       ├── drivers.py          🔄 Day 9
+│       ├── vehicles.py         🔄 Day 9
+│       └── shipments.py        🔄 Day 9
+│
+├── migrations/
+│   └── versions/
+│       ├── b6187da16e99...
+│       ├── 9a8c63d99c1c...
+│       └── 4f3ac6a69f21...     ← Day 8
+│
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_ownership.py       ← Day 8
+│   └── test_search_filters.py  🆕 Day 9
+│
+├── docs/
+│   └── api-design.md
+│
+├── pytest.ini
+├── requirements-dev.txt
+├── requirements.txt
+├── README.md                   🔄 Day 9
+├── alembic.ini
+├── .env.example
+└── .gitignore
+
+Day 8: Authorization
+Enforced resource ownership across all three core entities so one user can never read or modify another user's records — including reads, which now also require authentication (a necessary consequence of owner-scoping).
+Every private query is owner-scoped
+Added `owner_id` (FK → `users.id`) to `Driver`, `Vehicle`, and `Shipment`. Every query in `app/routers/{drivers,vehicles,shipments}.py` — create, list, detail, update, delete — filters by `owner_id == current_user.id`. A shipment's `driver_id`/`vehicle_id` references are also ownership-checked on create/update: you cannot attach another user's driver or vehicle to your own shipment, even if you know/guess its numeric id.
+Cross-user access returns a controlled error
+Reading, updating, or deleting a record that belongs to another user returns the same 404 used for a record that doesn't exist at all (`shipment_not_found`, `driver_not_found`, `vehicle_not_found`). This is deliberate: a 403 would confirm the id is real and just off-limits, letting someone enumerate valid ids belonging to other tenants. 404 reveals nothing.
+Migration handles pre-existing data safely
+The migration (`4f3ac6a69f21`) adds `owner_id` as nullable first, backfills any pre-existing rows to the earliest-registered user, then tightens the column to `NOT NULL` with named FK constraints (needed for a clean, reversible `downgrade()`). Verified against real leftover data from earlier days (0 drivers, 3 vehicles, 7 shipments with no owner) — backfill assigned them correctly, and a full downgrade → upgrade cycle re-runs the backfill logic cleanly.
+Ownership tests are included
+`tests/test_ownership.py` — 9 tests, run with `pytest` against the real ASGI app and a live Postgres database (no mocking). Each test spins up two independent users via `/auth/register` + `/auth/login` and asserts one can never read/list/update/delete the other's data. Fixed a real pytest-asyncio + async-SQLAlchemy event-loop bug along the way (connections bound to the wrong loop across function-scoped tests) by pinning both fixture and test loop scope to `session` in `pytest.ini`.
+Test	Verifies
+`test_owner_can_read_own_shipment`	Baseline: owner can read their own data
+`test_other_user_cannot_read_shipment`	Cross-user GET → 404
+`test_other_user_cannot_update_shipment`	Cross-user PATCH → 404, data genuinely untouched
+`test_other_user_cannot_delete_shipment`	Cross-user DELETE → 404, record still exists for owner
+`test_list_shipments_is_owner_scoped`	List never includes another user's shipments, either direction
+`test_cannot_assign_another_users_driver_to_own_shipment`	Can't attach someone else's driver via a guessed id
+`test_other_user_cannot_read_or_modify_driver`	Same GET/PATCH/DELETE protection for drivers
+`test_other_user_cannot_read_or_modify_vehicle`	Same GET/PATCH/DELETE protection for vehicles
+`test_list_drivers_and_vehicles_is_owner_scoped`	Driver/vehicle lists are also owner-scoped
+Run with:
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+Day 8 Status
+[x] Every private query is owner-scoped
+[x] Cross-user access returns a controlled error
+[x] Ownership tests are included
+```
+pulsefleet/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py            # async engine + session
+│   ├── models.py               # SQLAlchemy ORM models (incl. User, owner_id FKs)
+│   ├── schemas.py               # Pydantic models + Page[T] + auth schemas
+│   ├── exceptions.py            # NotFoundError, ConflictError, UnauthorizedError
+│   ├── pagination.py            # shared limit/offset query params
+│   ├── shipment_state.py        # status transition state machine
+│   ├── security.py              # password hashing + JWT
+│   ├── dependencies.py          # get_current_user auth dependency
+│   └── routers/
+│       ├── __init__.py
+│       ├── auth.py              # register, login, me
+│       ├── drivers.py           # owner-scoped CRUD
+│       ├── vehicles.py          # owner-scoped CRUD
+│       └── shipments.py         # owner-scoped CRUD
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py              # async test client + user fixtures
+│   └── test_ownership.py        # Day 8 ownership tests
+├── migrations/           # Alembic
+│   ├── env.py
+│   └── versions/
+├── docs/
+│   └── api-design.md
+├── requirements.txt
+├── requirements-dev.txt         # pytest, httpx, anyio (test-only deps)
+├── pytest.ini
+├── alembic.ini
+├── .env.example
+├── .gitignore
+└── README.md
+```
+Day 9: Search and Filters
+Extended list endpoints on shipments, drivers, and vehicles with search and range filters — every one executed as a SQL `WHERE` clause, never loaded into Python and filtered in memory.
+Filters execute in SQL
+Shipments: `q` (ILIKE on tracking_number), `origin`/`destination` (ILIKE on the joined `Route`), `pickup_after`/`pickup_before`, `delivery_after`/`delivery_before` (range on scheduled timestamps), `weight_min`/`weight_max` (range), plus the existing `status`/`driver_id`/`vehicle_id`/`priority` exact-match filters.
+Drivers: `q` (ILIKE across name/license_number/phone), `status`.
+Vehicles: `q` (ILIKE across plate_number/vehicle_type), `status`, `vehicle_type`, `capacity_min`/`capacity_max`.
+All filters (including the owner scope from Day 8) are combined with SQLAlchemy `.where()` calls before the query is ever sent to Postgres — count and page queries only ever touch the rows that actually match, never the full table.
+Empty results are handled
+A filter combination matching nothing returns `200` with `{"items": [], "total": 0, ...}` — never a 404 or error. Verified for shipments, drivers, and vehicles.
+Pagination remains correct with filters
+`total` reflects the filtered count, not the whole table (proven with a mixed dataset: 5 matching + 1 non-matching shipment → `total: 5`). Paging through filtered results with `limit=2` across 3 offsets returns all 5 filtered ids with zero duplicates and zero gaps.
+Bug found and fixed
+While wiring this up, found that `drivers.py` was missing its `Optional`/`Query` imports — the search filter code referenced them but nothing imported them, which would have crashed the whole app at startup. Fixed and re-verified the app imports and runs cleanly.
+Tests
+`tests/test_search_filters.py` — 7 tests, run against the live app + Postgres:
+Test	Verifies
+`test_search_by_tracking_number_substring`	`q` narrows to the matching shipment only
+`test_filter_by_origin`	Route-joined `origin` filter works
+`test_weight_range_filter`	Combined range + search filters (AND)
+`test_invalid_range_returns_422`	`weight_min > weight_max` rejected cleanly
+`test_empty_result_is_handled_not_errored`	No match → 200, empty page, not an error
+`test_empty_result_also_handled_for_drivers_and_vehicles`	Same guarantee on the other two resources
+`test_pagination_remains_correct_with_filters_applied`	`total` is the filtered count; 3 pages cover all 5 matches with no overlap
+Run with `pytest tests/ -v` — 16/16 pass (9 from Day 8 + 7 new).
+Day 9 Status
+[x] Filters execute in SQL
+[x] Empty results are handled
+[x] Pagination remains correct with filters
+Day 10: Service Integration
+Integrated an external weather API (Open-Meteo — free, no key required) behind a dedicated service-layer boundary, used by a new `POST /shipments/{id}/evaluate` endpoint to flag weather-related delay risk.
+Note on verification: this sandbox's network egress is restricted to package registries (pypi, npm, github, etc.) — it cannot reach `api.open-meteo.com` directly. The integration is built against Open-Meteo's real, documented, key-free API shape, but is verified entirely through mocking (`respx` for the HTTP layer, FastAPI dependency overrides for the route layer) rather than a live call. This isn't a workaround — full mockability without touching the network is exactly what the completion guide's third requirement asks for, and it's what a real CI pipeline would do anyway rather than depend on a live third party.
+Route code stays focused
+`app/services/weather_service.py` is the only file that knows the API's URL, request params, or response shape. The route handler (`evaluate_shipment` in `app/routers/shipments.py`) does exactly three things: check ownership, call `weather_service.assess_route_risk(lat, lon)`, and translate the result into an `Alert` if risk is moderate+. It never touches `httpx`, timeouts, or retry logic directly.
+Timeouts and failures are handled
+`WeatherService.assess_route_risk` never raises — every failure mode comes back as a plain `WeatherAssessment(available=False, reason=...)`:
+Timeout → one retry, then `reason="timeout"`
+HTTP error status (4xx/5xx) → `reason="http_error"`
+Connection error → `reason="connection_error"`
+Malformed/unexpected response shape → `reason="malformed_response"` (no retry — retrying won't fix a response the API isn't going to reshape)
+The endpoint treats an unavailable weather service as a degraded result, not a failed request: `POST /shipments/{id}/evaluate` still returns `200` with `weather_data_available: false` and a `note` explaining why, rather than a 500 or 503. A downed third-party API shouldn't block dispatch operations.
+Integration can be mocked in tests
+Two independent layers of mocking, both exercised:
+`tests/test_weather_service.py` (9 tests) — mocks `httpx` itself via `respx`, so `WeatherService` is tested against simulated success, timeout, 500, connection error, malformed response, and the retry-then-succeed / retry-exhausted paths. No FastAPI or database involved.
+`tests/test_evaluate_endpoint.py` (7 tests) — mocks at the FastAPI dependency level (`app.dependency_overrides[get_weather_service]`) with a fake service returning canned `WeatherAssessment`s, proving the endpoint's behavior (alert creation, owner-scoping, graceful degradation, auth, validation) without depending on `WeatherService`'s internals at all.
+Test file	Verifies
+`test_weather_service.py`	Risk classification, timeout/HTTP/connection/malformed-response handling, retry logic
+`test_evaluate_endpoint.py`	Alert created on high risk, no alert on low risk, graceful 200 on service outage, owner-scoping (Day 8 rule still applies), 404 on missing shipment, 401 without auth, 422 on bad coordinates
+Run with `pytest tests/ -v` — 32/32 pass (16 from Days 8–9 + 9 weather-service + 7 evaluate-endpoint).
+Day 10 Status
+[x] Timeouts and failures are handled
+[x] Route code stays focused
+[x] Integration can be mocked in tests
+```
+pulsefleet/
+├── app/
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── weather_service.py   # external API boundary (Day 10)
+│   ├── routers/
+│   │   └── shipments.py          # + POST /shipments/{id}/evaluate
+│   └── ... (unchanged from Day 9)
+├── tests/
+│   ├── test_weather_service.py   # mocks httpx via respx
+│   ├── test_evaluate_endpoint.py # mocks the FastAPI dependency
+│   └── ... (unchanged from Day 9)
+└── ... (unchanged from Day 9)
+```
+
+pulsefleet/
+│
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py
+│   ├── dependencies.py
+│   ├── exceptions.py
+│   ├── models.py
+│   ├── pagination.py
+│   ├── schemas.py
+│   ├── security.py
+│   ├── shipment_state.py
+│   │
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── drivers.py
+│   │   ├── vehicles.py
+│   │   └── shipments.py
+│   │
+│   └── services/                        
+│       ├── __init__.py                 
+│       └── weather_service.py          
+│
+├── migrations/
+│   ├── env.py
+│   ├── README
+│   ├── script.py.mako
+│   │
+│   └── versions/
+│       ├── b6187da16e99_create_core_tables.py
+│       ├── 9a8c63d99c1c_add_users_table.py
+│       └── 4f3ac6a69f21_add_owner_id_to_drivers_vehicles_.py
+│
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_ownership.py
+│   ├── test_search_filters.py
+│   ├── test_evaluate_endpoint.py          
+│   └── test_weather_service.py            
+│
+├── docs/
+│   └── api-design.md
+│
+├── pytest.ini
+├── requirements.txt
+├── requirements-dev.txt
+├── README.md
+├── alembic.ini
+├── .env.example
+└── .gitignore
