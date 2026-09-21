@@ -42,7 +42,7 @@ uvicorn app.main:app --reload
 
 ---
 
-## Day 1: Foundation and environment
+## Day 1 & 2: Foundation and environment
 
 Sets up the FastAPI project skeleton, virtual environment, and a `/health` endpoint.
 
